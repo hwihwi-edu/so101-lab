@@ -406,8 +406,23 @@ class NewFlowTest(unittest.TestCase):
         self.assertEqual(self.link.states(), ["WAITING", "STOP_REQUEST", "IN_PROGRESS", "SUCCESS", "WAITING"])
         self.assertNotIn("TRACKING", self.link.states())                      # 따라가지 않고 보이면 바로 정지
         self.assertEqual(self.world.loaded, "red")
-        self.assertEqual(self.arm.went[-1], "watch")                          # 대기 자세로 돌아간 뒤 출발 신호
+        self.assertEqual(self.arm.went[-1], "watch")                          # 출발 신호 뒤 대기 자세로
         self.assertEqual(self.link.pauses, [True, False])                     # 차 코드는 /arm/pause 로 선다 · 간다
+
+    def test_success_is_sent_before_going_back_to_the_wait_pose(self):
+        loader = self.build(note="red")
+        real_set = self.link.set
+        went_at = {}
+
+        def spy(state, *a, **k):
+            went_at.setdefault(state, list(self.arm.went))
+            return real_set(state, *a, **k)
+        self.link.set = spy
+        loader.run(max_jobs=1)
+        before = went_at["SUCCESS"]
+        self.assertEqual(before, went_at["IN_PROGRESS"])                     # 넣기 ~ 성공 신호 사이에 대기 자세로 안 감
+        self.assertGreater(len(self.arm.went), len(before))                  # 성공 신호 뒤에 대기 자세로
+        self.assertEqual(self.arm.went[-1], "watch")
 
     def test_error_away_from_wait_pose_keeps_the_car_stopped(self):
         loader = self.build(note="red")

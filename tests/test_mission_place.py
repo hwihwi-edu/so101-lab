@@ -396,6 +396,19 @@ class SessionTest(unittest.TestCase):
         self.assertIsNotNone(self.book.get_set(self.sid)["watch"])        # 대기 자세 (한 번)
         self.assertTrue(self.book.image_path(self.sid, take["steps"]["check"]["image"]))
 
+    def test_success_is_sent_from_the_check_pose_then_goes_home(self):
+        seen = []
+        real_set = self.link.set
+        self.link.set = lambda state, *a, **k: (seen.append((state, dict(self.ops.a))), real_set(state, *a, **k))[1]
+        self.s.start("learn", self.sid, self.link)
+        self.teach_one()
+        self.s._thread.join(5)
+        state, pose = seen[-1]
+        self.assertEqual(state, "SUCCESS")
+        self.assertEqual(pose["2"], 5.0)                                       # 9 성공 확인 자세에서 바로 출발 신호
+        self.assertEqual(self.ops.a["2"], 0.0)                                 # 그다음 대기 자세로
+        self.assertIn("대기 자세로 돌아왔어요", self.s.status["message"])
+
     def test_failed_take_waits_for_ball_and_picks_again(self):
         self.s.start("learn", self.sid, self.link)
         self.teach_one(put_ball=False)                                    # YOLO 판정 실패

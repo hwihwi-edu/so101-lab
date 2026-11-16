@@ -8,7 +8,7 @@
   1 [학습 시작] → 2 대기 자세 · 차 기다림 → 3 차 + 상자가 보이면 정지 신호 → 완전 정차 순간의 YOLO 사진 · 상자 위치 자동 저장
   → 4 색 읽고 공 집기 (프로그램)
   5 바구니 위 (사람이 손으로 옮기고 저장) → 6 집게 60% 열기 · 7 5 자세로 다시 (프로그램) → 9 성공 확인 자세 (사람이 옮기고 저장)
-  9 에서만 [다음 단계 진행] → 10 성공이면 대기 자세 + 출발 신호 / 11 실패면 공을 받침대에 놓고 [공 놓았어요] → 4 부터
+  9 에서만 [다음 단계 진행] → 10 성공이면 출발 신호 + 대기 자세 / 11 실패면 공을 받침대에 놓고 [공 놓았어요] → 4 부터
   학습을 안 돌리고 손으로 모을 때: 대기 자세에서 [+ 3 정차 사진 저장] → [+ 5 …] → [+ 9 …] → [새 회차로 저장]
 
 시작 번호 (학습 · 테스트 모두, 고른 번호부터 '지금 상태' 에서 이어서 한다)
@@ -16,7 +16,7 @@
   4   : (테스트만) 포스트잇을 읽고 그 색에 맞는 공(빨강 = 빨간공_집기, 파랑 = 파란공_집기)을 집기까지만. 차 신호는 안 보낸다
   5 · 6 · 7 · 9 : 팔이 공을 쥐고 있는(또는 놓은) 상태에서 그 단계부터 (색을 골라야 한다). 학습은 5 · 9 만.
         학습을 9 부터 하면 5 값은 가장 최근 성공 회차에서 빌린다. 5 부터 학습하면 3 정차 사진은 없다
-  10  : 대기 자세로 가서 출발 신호(SUCCESS) 만
+  10  : 출발 신호(SUCCESS) 를 보낸 뒤 대기 자세로 (2026-11-16: 신호를 먼저)
 색: 자동(포스트잇 읽기) · 빨강 · 파랑. 2~4 에서 빨강 / 파랑을 고르면 포스트잇 읽기를 건너뛰고 그 색 공을 집는다
 
 안전
@@ -230,12 +230,15 @@ class PlaceSession:
         self.status["arm_torque"] = True
 
     def _finish(self, runner: PlaceRunner, success: bool, why: str = ""):
-        self._go_wait(runner)
-        self.link.set("SUCCESS" if success else "FAILED")
-        if success:
-            self._result(GO_STEP, True, "성공! 대기 자세로 돌아와 차에게 출발 신호(SUCCESS)를 보냈어요.")
-        else:
-            self._say(FAIL_STEP, f"{self.cfg.attempts_max}번 모두 실패해서 차에게 FAILED(공 없이 출발)를 보냈어요. {why}".strip(), True)
+        if success:                                  # 성공: 확인 자세에서 바로 출발 신호 → 그다음 대기 자세 (2026-11-16)
+            self.link.set("SUCCESS")
+            self._say(GO_STEP, "성공! 차에게 출발 신호(SUCCESS)를 보냈어요. 대기 자세로 돌아가는 중…")
+            self._go_wait(runner)
+            self._result(GO_STEP, True, "성공! 차에게 출발 신호(SUCCESS)를 보내고 대기 자세로 돌아왔어요.")
+            return
+        self._go_wait(runner)                        # 실패: 집게가 바구니 근처일 수 있으니 대기 자세로 간 뒤 FAILED
+        self.link.set("FAILED")
+        self._say(FAIL_STEP, f"{self.cfg.attempts_max}번 모두 실패해서 차에게 FAILED(공 없이 출발)를 보냈어요. {why}".strip(), True)
 
     def _car_and_color(self, runner: PlaceRunner, sid: str | None, color: str | None = None) -> str | None:
         """2 · 3 · 4(색). color 를 골랐으면 포스트잇 읽기는 건너뛴다. 실패하면 None"""
