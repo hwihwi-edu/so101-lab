@@ -104,7 +104,20 @@ class PlaceSession:
         st["yolo"] = bool(self.cfg.place_use_yolo)
         st["seek"] = bool(self.cfg.place_seek)
         st["seek_area"] = float(self.cfg.seek_area)
+        st["model_on"] = bool(self.cfg.place_model)
+        st["model"] = self._model_info()
         return st
+
+    def _model_info(self) -> dict:
+        """세트마다 '정차 사진 → 5 자세' 모델 요약 (화면용). 모델이 없으면 n = 0"""
+        out = {}
+        for sid in self.book.sets:
+            try:
+                m = self.book.learned(sid).get("model")
+            except PlaceError:
+                m = None
+            out[sid] = {"n": 0} if not m else {"n": m["n"], "cx": m["box"]["cx"], "cy": m["box"]["cy"]}
+        return out
 
     def log(self, event, **kw):
         self._log(event, **kw)
@@ -787,7 +800,9 @@ function render(d){S=d;const b=d.book;const sel=$('set');const keep=sel.value;
  const moving=run&&!w;
  document.querySelectorAll('[data-save]').forEach(x=>x.disabled=run?w!=='teach'+x.dataset.save:!set);
  ['armoff','armon','grip'].forEach(i=>$(i).disabled=moving);document.querySelectorAll('[data-grip]').forEach(x=>x.disabled=moving);
- $('camdir').textContent=!set?'':d.seek?'넣기 방식: 바구니 찾아가기 (설정에서 켜 둠 · 학습한 5 · 9 를 안 씀)':'넣기 방식: 학습한 5 바구니 위 → 집게 열기 → 5 → 9 성공 확인';
+ const MD=(set&&(d.model||{})[set.id])||{n:0};
+ const how5=!d.model_on?'학습 평균 자세 (5 자세 계산은 설정에서 꺼 둠)':MD.n?'정차 사진으로 계산 (회차 '+MD.n+'개로 학습, 상자 x '+Math.round(MD.cx[0])+'~'+Math.round(MD.cx[1])+' · y '+Math.round(MD.cy[0])+'~'+Math.round(MD.cy[1])+' 범위, 2 부터 시작할 때)':'학습 평균 자세 (정차 사진이 있는 ✔ 회차가 10개 이상이면 계산해서 감)';
+ $('camdir').textContent=!set?'':d.seek?'넣기 방식: 바구니 찾아가기 (설정에서 켜 둠 · 학습한 5 · 9 를 안 씀)':'넣기 방식: 5 바구니 위 → 집게 열기 → 5 → 9 성공 확인. 5 자세: '+how5;
  const dr=d.draft||{},have=Object.keys(NAMES).filter(k=>dr[k]).length,ready=!!(dr.above&&dr.check);
  $('draftclear').disabled=run||!have;$('takesave').disabled=run||!set||!ready;$('tresult').disabled=run;
  $('teachhint').textContent=run?(w.startsWith('teach')?'학습 중: 지금은 '+w.slice(5)+'단계 차례예요. 팔을 옮긴 뒤 [+ '+w.slice(5)+' … 저장] 을 누르세요. 저장하면 다음 단계로 넘어가요.':'학습 · 테스트가 도는 중이에요. 가르칠 차례가 오면 저장 버튼이 켜져요.')

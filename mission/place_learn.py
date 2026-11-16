@@ -27,6 +27,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import RUNTIME_DIR
+from .place_model import fit as fit_model, samples_from_takes
 
 ROOT = Path(__file__).resolve().parent.parent
 PLACE_FILE = ROOT / "data" / "place_learn.json"
@@ -311,6 +312,8 @@ class PlaceBook:
                 "w": round(sum(b["w"] for b in targets) / len(targets), 1)},
             "release_grip": RELEASE_PCT,
             "cam": entry.get("cam"),
+            # 정차 사진의 상자 위치 → 5 자세 (2차식). 정차 사진이 있는 ✔ 회차가 모자라면 None → 평균 자세로
+            "model": fit_model(samples_from_takes(used)),
         }
 
     @staticmethod

@@ -4,7 +4,8 @@
   2 대기 자세로 가서 차를 기다림
   3 차와 상자가 함께 보이면 정지 신호 → 완전 정차 확인
   4 포스트잇 색 읽기 → 그 색 공 집기 (3번 동작 티칭의 빨간공_집기 / 파란공_집기)
-  5 바구니 위 (학습한 자세로 간 뒤, 바구니가 학습 때와 같은 자리에 보이도록 조금씩 맞춤 = 실시간 맞추기)
+  5 바구니 위 (기본: 3 완전 정차 순간 상자 위치로 계산한 자세 = place_model.py 2차식.
+               못 쓰면 학습 평균 자세로 간 뒤, 바구니가 학습 때와 같은 자리에 보이도록 조금씩 맞춤 = 실시간 맞추기)
   6 집게 해제 (늘 RELEASE_PCT = 60% 로 연다)
   7 바구니 위 (5 에서 맞춘 자세로 다시)
   9 성공 확인 자세 → '공이 든 상자' 가 보이면 성공
@@ -43,6 +44,7 @@ from dataclasses import dataclass
 from .m3_pick_place import band_ok
 from .motions import MotionError, play
 from .place_learn import RELEASE_PCT
+from .place_model import predict as predict_above
 from .place_reach import Reach, ReachError, lean_of, tip_of, urdf_from_angles
 from .yolo import BASKET_NAMES, pick_best
 
@@ -163,6 +165,7 @@ class PlaceRunner:
         self._log = log or (lambda event, **kw: print(f"[{time.strftime('%H:%M:%S')}] {event} {kw if kw else ''}", flush=True))
         self.stop_event = stop or threading.Event()
         self.max_wait: float | None = None           # 시험용: 차를 기다리는 최대 시간 (None = 계속)
+        self.stop_box: dict | None = None            # 완전 정차 순간 YOLO 상자 (cx, cy, w, h) → 5 자세 계산에 쓴다
 
     def log(self, event, **kw):
         self._log(event, **kw)
@@ -189,6 +192,7 @@ class PlaceRunner:
         t0 = self.clock()
         streak = 0
         stop_at = anchor = still_since = None
+        self.stop_box = None
         while True:
             self.check()
             now = self.clock()
@@ -213,7 +217,10 @@ class PlaceRunner:
                 elif anchor is None or math.hypot(target.cx - anchor[0], target.cy - anchor[1]) > cfg.track_stop_px:
                     anchor, still_since = (target.cx, target.cy), now
                 elif now - still_since >= cfg.load_stop_confirm_seconds:
-                    self.log("car_stopped", x=round(target.cx), y=round(target.cy))
+                    if box is not None:
+                        self.stop_box = {"cx": round(box.cx, 1), "cy": round(box.cy, 1),
+                                         "w": round(box.w, 1), "h": round(box.h, 1)}
+                    self.log("car_stopped", x=round(target.cx), y=round(target.cy), box=self.stop_box)
                     return True
             # 차를 기다리는 동안은 짧게 쉬어 빨리 알아챈다. 정지 신호 뒤(정차 확인)는 원래 주기
             self.sleep(cfg.load_see_period if stop_at is None else cfg.track_period)
@@ -254,16 +261,28 @@ class PlaceRunner:
                 return False, f"집게가 공 크기에서 멈추지 않았어요 ({pct}%). 공을 못 잡은 것 같아요"
         return True, "공을 집었어요"
 
-    # ── 5) 바구니 위: 학습 자세로 간 뒤 실시간 맞추기 ──────────────────
+    # ── 5) 바구니 위: 정차 사진으로 계산한 자세 (못 쓰면 학습 평균 자세 + 실시간 맞추기) ──
     def step_above(self, learned: dict) -> tuple[dict | None, str]:
-        """성공하면 (보정 각도, 설명). 실패하면 (None, 이유)"""
+        """성공하면 (보정 각도, 설명). 실패하면 (None, 이유).
+        보정 각도 = 실제로 간 자세 - 학습 평균 자세 (7 바구니 위 · 9 받침에 그대로 쓴다)"""
         cfg = self.cfg
         base = learned["poses"]["above"]
         self.check()
+        fallback = ""
+        if cfg.place_model:
+            pose, why = predict_above(learned.get("model"), self.stop_box, margin_px=cfg.place_model_margin_px)
+            if pose is not None:
+                goal = {j: pose.get(j, base[j]) for j in JOINTS}
+                ok = self.ops.move_to(goal)
+                corr = self._correction(base)
+                self.log("above_model", box=self.stop_box, goal=goal, corr=corr)
+                return corr, f"{why}로 갔어요" + ("" if ok else " (목표에 다 못 갔어요: 걸렸을 수 있어요)")
+            fallback = f"{why} → 평균 자세로. "
+            self.log("above_model_skip", why=why)
         self.ops.move_to(base)
         target = learned.get("target")
         if target is None:
-            return self._correction(base), "학습한 바구니 위치가 없어 맞추기 없이 학습 자세 그대로 갔어요"
+            return self._correction(base), fallback + "학습한 바구니 위치가 없어 맞추기 없이 학습 자세 그대로 갔어요"
         t0 = self.clock()
         pan_sign = 1 if cfg.track_pan_sign >= 0 else -1
         tilt_sign = int(cfg.place_servo_tilt_sign)
@@ -287,7 +306,7 @@ class PlaceRunner:
             if x_ok and y_ok:
                 corr = self._correction(base)
                 self.log("above_ok", ex=round(ex), ey=round(ey), corr=corr)
-                return corr, f"바구니 위로 맞췄어요 (가로 {ex:+.0f}, 세로 {ey:+.0f} 픽셀 차이)"
+                return corr, fallback + f"바구니 위로 맞췄어요 (가로 {ex:+.0f}, 세로 {ey:+.0f} 픽셀 차이)"
             now = self.ops.angles()
             moves = []
             if not x_ok:
