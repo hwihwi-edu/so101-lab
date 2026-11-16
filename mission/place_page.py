@@ -80,13 +80,19 @@ class PlaceSession:
         st = dict(self.status)
         st["busy"] = self.busy()
         st["link"] = None if self.link is None else {"arm": self.link.snapshot()["state"], "car": self.link.car_state,
-                                                      "fake": type(self.link).__name__ == "FakeLoadLink"}
+                                                      "fake": type(self.link).__name__ == "FakeLoadLink",
+                                                      "timing": self.link.timing()}
         try:
             grip = None if self.moving() else self.ops.grip_pct()
         except Exception:
             grip = None
         st["grip"] = None if grip is None else round(grip, 1)
         st["book"] = self.book.summary()
+        if self.link is not None:
+            st["timing"] = self.link.timing()
+        else:                                          # 학습 · 테스트 전: 파일에 남은 지난 기록
+            from .load_link import load_timings, timing_summary
+            st["timing"] = timing_summary(load_timings())
         st["fake"] = not getattr(self.robot, "real", True)
         st["yolo"] = bool(self.cfg.place_use_yolo)
         st["seek"] = bool(self.cfg.place_seek)
@@ -638,6 +644,7 @@ def place_body() -> str:
   <p class=small id=camtext>YOLO 인식 화면 (차 · 상자 · 포스트잇 · 공에 네모)</p>
   <ol class=pl-steps id=steps>{step_rows}</ol>
   <p class=small id=linktext></p>
+  <p class=small id=timetext></p>
  </div>
  <div>
   <h2 style=margin-top:0>세트</h2>
@@ -762,6 +769,9 @@ function render(d){S=d;const b=d.book;const sel=$('set');const keep=sel.value;
  const res={};(d.results||[]).forEach(r=>res[r.step]=r.ok);
  document.querySelectorAll('#steps li').forEach(li=>{const n=+li.dataset.step;li.className=(d.busy&&n===d.step?'now ':'')+(n in res?(res[n]?'ok':'bad'):'')});
  const L=d.link;$('linktext').textContent=L?('차 통신'+(L.fake?'(화면에만)':'')+': 팔 → '+L.arm+' · 차 상태 '+(L.car||'아직 못 받음')+(d.attempt?' · 시도 '+d.attempt+'번째':'')+(d.color?' · 색 '+(d.color==='red'?'빨강':'파랑'):'')):'';
+ const TM=d.timing;$('timetext').textContent=!TM?'':
+  (TM.running!=null?'⏱ 정차 신호 후 '+TM.running.toFixed(1)+'초 (출발 신호 기다리는 중)':'⏱ 정차 → 출발 시간')+
+  (TM.n?' · 최근: '+TM.last.map(x=>x.sec.toFixed(1)+'초'+(x.result==='SUCCESS'?'':'(실패)')).join(', ')+' · 평균 '+TM.avg.toFixed(1)+'초 (최소 '+TM.min.toFixed(1)+' · 최대 '+TM.max.toFixed(1)+', '+TM.n+'회)':(TM.running!=null?'':' · 아직 기록 없음 (학습 · 테스트에서 정차 신호를 보내면 재기 시작)'));
  if(!set){$('watch').innerHTML='';$('takes').innerHTML='<p class=small>세트를 만들고 학습을 시작하세요.</p>';lastTakes=lastWatch='';return}
  const ids=set.takes.map(t=>t.id);if(KNOWN&&KNOWN.set===set.id)ids.filter(i=>!KNOWN.ids.includes(i)).forEach(i=>OPEN.add(i));KNOWN={set:set.id,ids};  // 새로 저장된 회차는 펼쳐서 보여 준다
  const wt=set.watch;const wh='<div class=pl-take><b>대기 자세 (세트마다 한 번)</b> '+(wt?'<span class=small>'+wt.t+' · 모터 '+ang(wt.angles)+' · 집게 '+wt.grip+'%</span>':'<span class=warn>아직 없음 (학습을 시작하면 자동 저장)</span>')+
