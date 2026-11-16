@@ -44,6 +44,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .arm_io import apply_accel, play_options
 from .config import RUNTIME_DIR, MissionConfig
 from .m3_pick_place import band_ok
 from .motions import MotionBook, MotionError, play
@@ -211,8 +212,9 @@ class Loader:
     # ── 팔 (시험에서는 이 세 개만 바꿔 끼운다) ──────────────────────────
     def play_motion(self, name: str, pan_offset: float = 0.0) -> dict:
         _tid, take = self.book.chosen(name)
-        return play(self.arm.robot, take["points"], speed=self.cfg.speed_slow, pan_offset=pan_offset,
-                    stop=_Leaving(self), too_hot=self.arm.too_hot, sleep=self.sleep)
+        apply_accel(self.arm.robot, self.cfg)
+        return play(self.arm.robot, take["points"], pan_offset=pan_offset,
+                    stop=_Leaving(self), too_hot=self.arm.too_hot, sleep=self.sleep, **play_options(self.cfg))
 
     def turn_to(self, pan: float) -> None:
         self.arm.robot.move(1, pan, speed=self.cfg.speed_slow)

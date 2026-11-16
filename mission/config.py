@@ -73,6 +73,10 @@ class MissionConfig:
     # 속도 (서보 틱/초, 200 ≈ 17.6도/초)
     speed_slow: int = 120
     speed_normal: int = 200
+    # 팔 움직임 (2026-11-16): 상차 · 4번 테스트 · 동작 재생 · 대기 자세로 가기에 쓴다 (arm_io.run_speed / settle)
+    arm_fast: bool = True                    # 켜면 서보 최고 속도(ARM_MAX_SPEED) + arm_accel. 끄면 예전처럼 speed_slow · 가속 32
+    arm_accel: int = 254                     # arm_fast 일 때 가속도 (0~254, 클수록 빨리 최고 속도에 닿는다. 공이 흔들려 빠지면 줄이세요)
+    arm_no_pause: bool = True                # 켜면 동작 사이 멈칫 없앰: 목표 3° 안이면 바로 다음 동작, 지점마다 쉬기 · 집게 뒤 0.3초 없음
     # 시도
     attempts_max: int = 3
     # 그리퍼 % (0 닫힘 ~ 100 열림). 공을 쥐었을 때 값은 티칭 도구(m0_teach_poses 의 ballgrip)로 채운다
@@ -125,7 +129,7 @@ class MissionConfig:
     yolo_conf: float = 0.45                  # 확신 정도가 이보다 낮은 것은 버린다 (0~1)
     load_wait_pose: str = "watch"            # 대기 자세 이름: 차가 오는 쪽을 바라보는 고정 자세
     load_stop_lead_deg: float = 2.0          # 기준 받침 각도보다 이만큼 먼저 정지 신호를 낸다 (차가 미끄러지는 만큼)
-    load_stop_confirm_seconds: float = 1.5   # 정지 신호 뒤 차가 이만큼 연속으로 안 움직여야 '완전 정차' (1~2초)
+    load_stop_confirm_seconds: float = 0.5   # 정지 신호 뒤 차가 이만큼 연속으로 안 움직여야 '완전 정차' (2026-11-16: 1.5 → 0.5초)
     load_stop_timeout: float = 15.0          # 정지 신호 뒤 이 시간 안에 완전 정차가 안 되면 이번 차는 포기 (FAILED)
     load_pan_margin_deg: float = 15.0        # 추적할 때 받침이 '대기 자세 ~ 기준 각도' 밖으로 더 돌 수 있는 여유
     load_offset_max_deg: float = 25.0        # 차 위치 보정으로 받침을 더 돌리는 최대 각도 (넘으면 그 시도는 실패)

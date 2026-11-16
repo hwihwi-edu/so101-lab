@@ -41,6 +41,7 @@ import threading
 import time
 from dataclasses import dataclass
 
+from .arm_io import apply_accel, play_options, run_speed, settle
 from .m3_pick_place import band_ok
 from .motions import MotionError, play
 from .place_learn import RELEASE_PCT
@@ -132,8 +133,9 @@ class ArmOps:
         return self.robot.gripper_percent()
 
     def move_to(self, angles: dict, timeout: float = 12.0, speed: int | None = None) -> bool:
-        self.robot.move_all({int(j): float(v) for j, v in angles.items()}, speed=speed or self.cfg.speed_slow)
-        return self.robot.wait_until_settled(timeout=timeout)
+        apply_accel(self.robot, self.cfg)
+        self.robot.move_all({int(j): float(v) for j, v in angles.items()}, speed=speed or run_speed(self.cfg))
+        return settle(self.robot, self.cfg, timeout)
 
     def nudge(self, joint: str, deg: float) -> None:
         self.robot.move(int(joint), deg, speed=self.cfg.speed_slow)
@@ -153,7 +155,8 @@ class ArmOps:
     def play_pick(self, color: str, book, stop) -> dict:
         _tid, take = book.chosen(PICK_MOTION[color])
         self.robot.torque(True)
-        return play(self.robot, take["points"], speed=self.cfg.speed_slow, stop=stop, too_hot=self.arm.too_hot)
+        apply_accel(self.robot, self.cfg)
+        return play(self.robot, take["points"], stop=stop, too_hot=self.arm.too_hot, **play_options(self.cfg))
 
 
 class PlaceRunner:
