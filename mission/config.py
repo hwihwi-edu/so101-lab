@@ -152,6 +152,7 @@ class MissionConfig:
     place_model: bool = True                    # 켜면 정차 사진의 상자 위치로 5 자세를 계산해서 간다 (place_model.py). 못 쓰면 평균 자세
     place_model_margin_px: float = 40.0         # 상자 위치가 학습한 범위에서 이 픽셀보다 더 벗어나면 계산하지 않고 평균 자세
     save_stop_miss: bool = True                 # 켜면 완전 정차 순간 상자(바구니)를 못 찾았을 때 그 화면을 data/stop_miss/ 에 저장 (2026-11-17)
+    save_place_fail: bool = True                # 켜면 상자는 찾았는데 공 넣기에 실패했을 때 그 정차 화면을 data/place_fail/ 에 저장 (2026-11-17)
     # 바구니 찾아가 넣기 (학습 없이, 2026-11-16 부터 기본으로 끔 → 4번에서 가르친 5 · 9 로 넣기): 바구니를 화면 가운데로 → 화면의 50% 가 될 때까지 다가감 → 집게 열기 → 위로 → 성공 확인
     place_seek: bool = False                    # 켜면 학습한 5 · 9 를 쓰지 않고 YOLO 로 바구니를 찾아가 넣는다
     seek_area: float = 0.75                     # 바구니 네모가 화면의 이만큼(0~1)을 차지하면 '바구니 바로 위' 로 보고 집게를 연다
