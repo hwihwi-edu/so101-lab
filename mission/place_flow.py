@@ -4,6 +4,7 @@
   2 대기 자세로 가서 차를 기다림
   3 차와 상자가 함께 보이면 정지 신호 → 완전 정차 확인
     (완전 정차 순간 상자를 못 찾으면 그 화면을 data/stop_miss/ 에 저장 = 설정 save_stop_miss. YOLO 다시 학습할 사진)
+    (상자를 찾았으면 그 화면을 기억해 두었다가, 공을 집은 뒤 넣기에 실패하면 data/place_fail/ 에 저장 = 설정 save_place_fail)
   4 포스트잇 색 읽기 → 그 색 공 집기 (3번 동작 티칭의 빨간공_집기 / 파란공_집기)
   5 바구니 위 (기본: 3 완전 정차 순간 상자 위치로 계산한 자세 = place_model.py 2차식.
                못 쓰면 학습 평균 자세로 간 뒤, 바구니가 학습 때와 같은 자리에 보이도록 조금씩 맞춤 = 실시간 맞추기)
@@ -37,6 +38,7 @@
 """
 from __future__ import annotations
 
+import json
 import math
 import threading
 import time
@@ -55,6 +57,12 @@ PICK_MOTION = {"red": "빨간공_집기", "blue": "파란공_집기"}
 COLOR_MIN_HITS = 3
 JOINTS = ("1", "2", "3", "4", "5")
 STOP_MISS_DIR = Path(__file__).resolve().parent.parent / "data" / "stop_miss"   # 정차했는데 상자를 못 찾은 화면
+PLACE_FAIL_DIR = Path(__file__).resolve().parent.parent / "data" / "place_fail" # 상자는 찾았는데 공 넣기에 실패한 회차의 정차 화면
+
+
+def _stem() -> str:
+    """저장 파일 이름: 날짜_시각_밀리초"""
+    return time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
 
 
 class FlowStopped(RuntimeError):
@@ -105,21 +113,31 @@ class YoloEye:
             self._jpeg = buf.tobytes() if ok else None
         return self._jpeg
 
-    def save_last(self, folder, stem: str) -> list:
-        """마지막 사진을 저장한다: <stem>.jpg = 원본 (YOLO 다시 학습할 때 라벨 붙일 사진), <stem>_yolo.jpg = 찾은 것을 그린 사진.
-        저장한 파일 목록 (사진이 없으면 빈 목록)"""
+    def snapshot(self):
+        """마지막 사진 + 찾은 것을 따로 떼어 둔다 (나중에 저장할 때). 사진이 없으면 None"""
         if self.last_frame is None:
+            return None
+        return self.last_frame.copy(), list(self.last_dets)
+
+    def save_shot(self, shot, folder, stem: str) -> list:
+        """snapshot() 을 저장한다: <stem>.jpg = 원본 (YOLO 다시 학습할 때 라벨 붙일 사진), <stem>_yolo.jpg = 찾은 것을 그린 사진.
+        저장한 파일 목록"""
+        if shot is None:
             return []
         import cv2
+        from .yolo import draw
+        frame, dets = shot
         folder = Path(folder)
         folder.mkdir(parents=True, exist_ok=True)
-        raw = folder / f"{stem}.jpg"
-        out = [raw] if cv2.imwrite(str(raw), self.last_frame) else []
-        drawn = self.jpeg()
-        if drawn:
-            (folder / f"{stem}_yolo.jpg").write_bytes(drawn)
-            out.append(folder / f"{stem}_yolo.jpg")
+        out = []
+        for path, img in ((folder / f"{stem}.jpg", frame), (folder / f"{stem}_yolo.jpg", draw(frame, dets))):
+            if cv2.imwrite(str(path), img):
+                out.append(path)
         return out
+
+    def save_last(self, folder, stem: str) -> list:
+        """마지막 사진을 바로 저장한다 (save_shot 참고). 사진이 없으면 빈 목록"""
+        return self.save_shot(self.snapshot(), folder, stem)
 
     def basket(self) -> dict | None:
         """마지막 사진에서 가장 확실한 바구니(상자) 하나"""
@@ -190,6 +208,10 @@ class PlaceRunner:
         self.stop_box: dict | None = None            # 완전 정차 순간 YOLO 상자 (cx, cy, w, h) → 5 자세 계산에 쓴다
         self.miss_dir = STOP_MISS_DIR                # 완전 정차인데 상자를 못 찾았을 때 화면을 저장할 곳 (시험에서 바꾼다)
         self.miss_saved: list = []                   # 이번 사이클에 저장한 파일 (화면에 알려 줄 때)
+        self.fail_dir = PLACE_FAIL_DIR               # 공 넣기 실패 때 정차 화면을 저장할 곳 (시험에서 바꾼다)
+        self.stop_shot = None                        # 완전 정차 순간 화면 (상자를 찾았을 때만). 넣기 실패 때 저장
+        self.fail_saved: list = []                   # 이번 사이클에 넣기 실패로 저장한 파일 (한 사이클에 한 번만 저장)
+        self.fail_tried = False                      # 이번 사이클에 저장을 이미 해 봤는지
 
     def log(self, event, **kw):
         self._log(event, **kw)
@@ -218,6 +240,9 @@ class PlaceRunner:
         stop_at = anchor = still_since = None
         self.stop_box = None
         self.miss_saved = []
+        self.stop_shot = None
+        self.fail_saved = []
+        self.fail_tried = False
         while True:
             self.check()
             now = self.clock()
@@ -245,6 +270,8 @@ class PlaceRunner:
                     if box is not None:
                         self.stop_box = {"cx": round(box.cx, 1), "cy": round(box.cy, 1),
                                          "w": round(box.w, 1), "h": round(box.h, 1)}
+                        if self.cfg.save_place_fail and hasattr(self.eye, "snapshot"):
+                            self.stop_shot = self.eye.snapshot()     # 넣기에 실패하면 이 화면을 저장한다
                     self.log("car_stopped", x=round(target.cx), y=round(target.cy), box=self.stop_box)
                     if box is None:
                         self._save_stop_miss(seen)
@@ -259,15 +286,39 @@ class PlaceRunner:
         save = getattr(self.eye, "save_last", None)
         if save is None:
             return
-        stem = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
         try:
-            self.miss_saved = [str(p) for p in save(self.miss_dir, stem)]
+            self.miss_saved = [str(p) for p in save(self.miss_dir, _stem())]
         except Exception as e:                      # 디스크가 꽉 찼거나 폴더 권한 문제여도 상차는 멈추지 않는다
             self.log("stop_miss_save_failed", error=str(e))
             return
         names = [d.name for d in (seen.dets if seen else [])]
         self.log("stop_miss_saved", files=self.miss_saved, seen=names,
                  msg="완전 정차했는데 상자를 못 찾아서 그 화면을 저장했어요")
+
+    def save_place_fail(self, attempt: int, why: str, color: str | None = None) -> list:
+        """공을 집은 뒤 넣기에 실패했을 때: 완전 정차 순간 화면(상자를 찾았던 사진) + 그때 정보(.json)를 저장한다.
+        한 사이클(차 한 대)에 한 번만 저장한다 (같은 정차 화면이므로). 저장한 파일 목록. 실패해도 상차는 계속한다"""
+        if not self.cfg.save_place_fail or self.stop_shot is None or self.fail_tried:
+            return []
+        self.fail_tried = True                       # 저장이 안 돼도 이 차에서는 다시 하지 않는다
+        save = getattr(self.eye, "save_shot", None)
+        if save is None:
+            return []
+        stem = _stem()
+        try:
+            files = [str(p) for p in save(self.stop_shot, self.fail_dir, stem)]
+            info = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "attempt": attempt, "why": why, "color": color,
+                    "stop_box": self.stop_box, "place_model": bool(self.cfg.place_model)}
+            meta = Path(self.fail_dir) / f"{stem}.json"
+            meta.write_text(json.dumps(info, ensure_ascii=False, indent=1), encoding="utf-8")
+            files.append(str(meta))
+        except Exception as e:
+            self.log("place_fail_save_failed", error=str(e))
+            return []
+        self.fail_saved = files
+        self.log("place_fail_saved", files=files, attempt=attempt, why=why,
+                 msg="공 넣기에 실패해서 이번 정차 화면을 저장했어요")
+        return files
 
     # ── 4) 색 · 공 집기 ─────────────────────────────────────────────────
     def read_color(self) -> str | None:

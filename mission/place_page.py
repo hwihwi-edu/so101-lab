@@ -430,6 +430,8 @@ class PlaceSession:
                 ok = True
             if ok:
                 ok = self._auto(runner, learned, start if attempt == 1 else 5, maybe_pause)
+                if not ok and runner.save_place_fail(attempt, self._fail_why, color):   # 공을 옮겼는데 넣기 실패
+                    self._say(FAIL_STEP, f"{attempt}번째 넣기 실패 · 이번 정차 화면을 저장했어요 (data/place_fail/)")
             if ok:
                 return self._finish(runner, True)
             if not self._after_fail(runner, attempt):
@@ -453,12 +455,15 @@ class PlaceSession:
         self._result(4, ok, why + tail)
 
     def _auto(self, runner: PlaceRunner, learned: dict, start: int, maybe_pause) -> bool:
-        """5 바구니 위 → 6 집게 60% → 7 바구니 위 → 9 성공 확인 (기본). 설정에서 '바구니 찾아가기' 를 켜면 그 방식"""
+        """5 바구니 위 → 6 집게 60% → 7 바구니 위 → 9 성공 확인 (기본). 설정에서 '바구니 찾아가기' 를 켜면 그 방식.
+        실패하면 self._fail_why 에 어느 단계에서 왜 실패했는지 남긴다 (넣기 실패 화면 저장 정보)"""
+        self._fail_why = ""
         if self.cfg.place_seek:
             if start <= 5:
                 self._say(5, "대기 자세(바구니가 보이는 자세)로 가서 바구니를 찾는 중…")
                 self._go_wait(runner)
-            ok, _why = runner.seek_place(on_step=self._result, start=max(5, start), before=maybe_pause)
+            ok, why = runner.seek_place(on_step=self._result, start=max(5, start), before=maybe_pause)
+            self._fail_why = "" if ok else why
             return ok
         if start <= 5:
             maybe_pause(5)
@@ -466,6 +471,7 @@ class PlaceSession:
             corr, why = runner.step_above(learned)
             self._result(5, corr is not None, why)
             if corr is None:
+                self._fail_why = f"5 {why}"
                 return False
         else:
             corr = {j: 0.0 for j in ("1", "2", "3", "4", "5")}
@@ -477,6 +483,7 @@ class PlaceSession:
             ok, why = fn()
             self._result(num, ok, why)
             if not ok:
+                self._fail_why = f"{num} {why}"
                 return False
         return True
 

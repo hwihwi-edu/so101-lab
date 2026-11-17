@@ -87,6 +87,99 @@ class StopMissTest(unittest.TestCase):
         self.assertTrue(self.runner(eye).wait_car_and_stop())
 
 
+class ShotEye(StopEye):
+    """정차 화면을 떼어 두고(snapshot) 저장하는(save_shot) 것까지 흉내 낸다"""
+
+    def __init__(self, link, **kw):
+        super().__init__(link, **kw)
+        self.shots = []
+
+    def snapshot(self):
+        return ("정차 화면", ["car", "box"])
+
+    def save_shot(self, shot, folder, stem):
+        self.shots.append((shot, Path(folder), stem))
+        Path(folder).mkdir(parents=True, exist_ok=True)
+        return [Path(folder) / f"{stem}.jpg", Path(folder) / f"{stem}_yolo.jpg"]
+
+
+class PlaceFailTest(StopMissTest):
+    """상자를 찾았고 공을 옮겼는데 넣기에 실패 → 그 차의 정차 화면 저장"""
+
+    def stopped(self, hide_box=False):
+        eye = ShotEye(self.link, hide_box=hide_box)
+        r = self.runner(eye)
+        r.fail_dir = self.root / "place_fail"
+        self.assertTrue(r.wait_car_and_stop())
+        return eye, r
+
+    def test_failed_place_saves_the_stop_screen_with_its_info(self):
+        import json
+        eye, r = self.stopped()
+        files = r.save_place_fail(1, "9 공이 든 상자가 안 보여요", "red")
+        self.assertEqual(len(eye.shots), 1)
+        self.assertEqual(eye.shots[0][0], ("정차 화면", ["car", "box"]))        # 실패 때 화면이 아니라 정차 순간 화면
+        self.assertEqual(len(files), 3)                                          # 원본 · YOLO 그림 · 정보
+        info = json.loads(Path(files[-1]).read_text(encoding="utf-8"))
+        self.assertEqual(info["stop_box"], r.stop_box)
+        self.assertEqual((info["attempt"], info["color"]), (1, "red"))
+        self.assertIn("9", info["why"])
+        self.assertIn("place_fail_saved", [ev for ev, _ in self.events])
+
+    def test_only_once_per_car(self):
+        eye, r = self.stopped()
+        r.save_place_fail(1, "a")
+        self.assertEqual(r.save_place_fail(2, "b"), [])                           # 같은 정차 화면이라 한 번만
+        self.assertEqual(len(eye.shots), 1)
+        self.assertTrue(r.wait_car_and_stop())                                    # 다음 차는 다시 저장
+        r.save_place_fail(1, "c")
+        self.assertEqual(len(eye.shots), 2)
+
+    def test_box_not_found_at_the_stop_is_not_a_place_fail(self):
+        eye, r = self.stopped(hide_box=True)                                      # 그 경우는 stop_miss 로 저장된다
+        self.assertEqual(r.save_place_fail(1, "x"), [])
+        self.assertEqual(eye.shots, [])
+
+    def test_switched_off_saves_nothing(self):
+        self.cfg.save_place_fail = False
+        eye, r = self.stopped()
+        self.assertIsNone(r.stop_shot)
+        self.assertEqual(r.save_place_fail(1, "x"), [])
+
+    def test_a_failed_save_does_not_stop_the_loading(self):
+        eye, r = self.stopped()
+        eye.save_shot = lambda *a: (_ for _ in ()).throw(OSError("디스크가 꽉 찼어요"))
+        self.assertEqual(r.save_place_fail(1, "x"), [])
+        self.assertIn("place_fail_save_failed", [ev for ev, _ in self.events])
+
+
+class LoadingPlaceFailTest(unittest.TestCase):
+    """상차 미션(Loader): 공을 집고 넣기에 실패한 회차에서 저장, 성공하면 저장 안 함"""
+
+    from tests.test_mission_loading import NewFlowTest as _flow
+    setUp = _flow.setUp
+    build = _flow.build
+
+    def run_one(self, miss):
+        from unittest import mock
+        loader = self.build(note="red")
+        saved = []
+        self.eye.snapshot = lambda: "정차 화면"
+        self.eye.save_shot = lambda shot, folder, stem: saved.append((shot, Path(folder))) or []
+        self.ops.miss = miss
+        with mock.patch("mission.place_flow.PLACE_FAIL_DIR", Path(self.tmp.name) / "place_fail"):
+            loader.run(max_jobs=1)
+        return saved
+
+    def test_place_miss_saves_the_stop_screen_once(self):
+        saved = self.run_one([True, True])                                         # 2번 빗나가고 3번째 성공
+        self.assertEqual(saved, [("정차 화면", Path(self.tmp.name) / "place_fail")])
+        self.assertEqual(self.link.states()[-2], "SUCCESS")
+
+    def test_success_saves_nothing(self):
+        self.assertEqual(self.run_one([]), [])
+
+
 def _cv2_ok():
     try:
         import cv2
@@ -112,6 +205,22 @@ class YoloEyeSaveTest(unittest.TestCase):
             files = eye.save_last(Path(d) / "stop_miss", "x")
             self.assertEqual([f.name for f in files], ["x.jpg", "x_yolo.jpg"])
             self.assertTrue(all(f.stat().st_size > 0 for f in files))
+
+    def test_snapshot_is_kept_after_new_photos(self):
+        import numpy as np
+        frames = iter([np.full((480, 640, 3), 10, np.uint8), np.full((480, 640, 3), 200, np.uint8)])
+
+        class Det0:
+            def detect(self, frame):
+                return []
+
+        eye = YoloEye(lambda: next(frames), Det0())
+        eye.look()
+        shot = eye.snapshot()                                                  # 정차 순간
+        eye.look()                                                             # 그 뒤 사진이 바뀌어도
+        self.assertEqual(int(shot[0][0, 0, 0]), 10)
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(len(eye.save_shot(shot, d, "s")), 2)
 
 
 if __name__ == "__main__":

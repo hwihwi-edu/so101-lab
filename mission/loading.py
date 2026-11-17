@@ -174,6 +174,8 @@ class Loader:
                         ok, why = runner.seek_place(on_step=step_log)
                     else:
                         ok, why = runner.auto_place(learned, on_step=step_log)
+                    if not ok:                                       # 공을 옮겼는데 넣기 실패 → 정차 화면 저장 (차 한 대에 한 번)
+                        runner.save_place_fail(n, why, color)
                 self.log("attempt_result", n=n, ok=ok, why=why)
                 if ok:
                     result = "success"
