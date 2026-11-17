@@ -252,7 +252,8 @@ class PlaceSession:
             self._result(3, False, "정지 신호를 냈지만 차가 서지 않았어요")
             self.link.set("FAILED")
             return None
-        self._result(3, True, "차와 상자를 보고 정지 신호를 보냈고, 완전히 섰어요")
+        self._result(3, True, "차와 상자를 보고 정지 신호를 보냈고, 완전히 섰어요"
+                     + (" · 섰을 때 상자를 못 찾아서 그 화면을 저장했어요 (data/stop_miss/)" if runner.miss_saved else ""))
         if sid is not None:                              # 학습: 완전 정차 순간의 사진 · 상자 위치 (5 모터 값 학습용)
             self._capture_stop()
         if color is not None:

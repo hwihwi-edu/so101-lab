@@ -3,6 +3,7 @@
 단계 번호 (허브 4번 화면과 같다)
   2 대기 자세로 가서 차를 기다림
   3 차와 상자가 함께 보이면 정지 신호 → 완전 정차 확인
+    (완전 정차 순간 상자를 못 찾으면 그 화면을 data/stop_miss/ 에 저장 = 설정 save_stop_miss. YOLO 다시 학습할 사진)
   4 포스트잇 색 읽기 → 그 색 공 집기 (3번 동작 티칭의 빨간공_집기 / 파란공_집기)
     (2026-11-17: 색 투표를 정지 신호 직후부터 3 과 같이 모아 둔다. 같은 색이 color_fast_hits 장 이상이고 반대 색이 0장이면
      정차가 확인되는 순간 바로 집기 시작. 반대 색이 섞이면 예전처럼 15장을 새로 본다. 0 이면 예전 방식)
@@ -42,6 +43,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from .arm_io import apply_accel, play_options, run_speed, settle
 from .m3_pick_place import band_ok
@@ -54,6 +56,7 @@ from .yolo import BASKET_NAMES, pick_best
 PICK_MOTION = {"red": "빨간공_집기", "blue": "파란공_집기"}
 COLOR_MIN_HITS = 3
 JOINTS = ("1", "2", "3", "4", "5")
+STOP_MISS_DIR = Path(__file__).resolve().parent.parent / "data" / "stop_miss"   # 정차했는데 상자를 못 찾은 화면
 
 
 class FlowStopped(RuntimeError):
@@ -103,6 +106,22 @@ class YoloEye:
             ok, buf = cv2.imencode(".jpg", draw(self.last_frame, self.last_dets))
             self._jpeg = buf.tobytes() if ok else None
         return self._jpeg
+
+    def save_last(self, folder, stem: str) -> list:
+        """마지막 사진을 저장한다: <stem>.jpg = 원본 (YOLO 다시 학습할 때 라벨 붙일 사진), <stem>_yolo.jpg = 찾은 것을 그린 사진.
+        저장한 파일 목록 (사진이 없으면 빈 목록)"""
+        if self.last_frame is None:
+            return []
+        import cv2
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+        raw = folder / f"{stem}.jpg"
+        out = [raw] if cv2.imwrite(str(raw), self.last_frame) else []
+        drawn = self.jpeg()
+        if drawn:
+            (folder / f"{stem}_yolo.jpg").write_bytes(drawn)
+            out.append(folder / f"{stem}_yolo.jpg")
+        return out
 
     def basket(self) -> dict | None:
         """마지막 사진에서 가장 확실한 바구니(상자) 하나"""
@@ -173,6 +192,8 @@ class PlaceRunner:
         self.stop_box: dict | None = None            # 완전 정차 순간 YOLO 상자 (cx, cy, w, h) → 5 자세 계산에 쓴다
         self._votes: dict | None = None              # 정차를 기다리는 동안 미리 모은 색 투표 (read_color 가 한 번 쓰고 버린다)
         self._t_stop: float | None = None            # 정지 신호를 낸 시각 (색이 몇 초 만에 정해졌는지 기록용)
+        self.miss_dir = STOP_MISS_DIR                # 완전 정차인데 상자를 못 찾았을 때 화면을 저장할 곳 (시험에서 바꾼다)
+        self.miss_saved: list = []                   # 이번 사이클에 저장한 파일 (화면에 알려 줄 때)
 
     def log(self, event, **kw):
         self._log(event, **kw)
@@ -202,6 +223,7 @@ class PlaceRunner:
         self.stop_box = None
         self._votes, self._t_stop = None, None
         votes = self._new_votes() if int(cfg.color_fast_hits) > 0 else None
+        self.miss_saved = []
         while True:
             self.check()
             now = self.clock()
@@ -238,9 +260,28 @@ class PlaceRunner:
                     self.log("car_stopped", x=round(target.cx), y=round(target.cy), box=self.stop_box,
                              since_stop=round(now - stop_at, 2))
                     self._votes = votes
+                    if box is None:
+                        self._save_stop_miss(seen)
                     return True
             # 차를 기다리는 동안은 짧게 쉬어 빨리 알아챈다. 정지 신호 뒤(정차 확인)는 원래 주기
             self.sleep(cfg.load_see_period if stop_at is None else cfg.track_period)
+
+    def _save_stop_miss(self, seen) -> None:
+        """완전 정차인데 상자를 못 찾은 화면을 저장한다. 저장이 안 돼도 상차는 계속한다"""
+        if not self.cfg.save_stop_miss:
+            return
+        save = getattr(self.eye, "save_last", None)
+        if save is None:
+            return
+        stem = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
+        try:
+            self.miss_saved = [str(p) for p in save(self.miss_dir, stem)]
+        except Exception as e:                      # 디스크가 꽉 찼거나 폴더 권한 문제여도 상차는 멈추지 않는다
+            self.log("stop_miss_save_failed", error=str(e))
+            return
+        names = [d.name for d in (seen.dets if seen else [])]
+        self.log("stop_miss_saved", files=self.miss_saved, seen=names,
+                 msg="완전 정차했는데 상자를 못 찾아서 그 화면을 저장했어요")
 
     # ── 4) 색 · 공 집기 ─────────────────────────────────────────────────
     @staticmethod
