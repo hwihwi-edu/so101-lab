@@ -134,6 +134,7 @@ class MissionConfig:
     load_pan_margin_deg: float = 15.0        # 추적할 때 받침이 '대기 자세 ~ 기준 각도' 밖으로 더 돌 수 있는 여유
     load_offset_max_deg: float = 25.0        # 차 위치 보정으로 받침을 더 돌리는 최대 각도 (넘으면 그 시도는 실패)
     load_color_frames: int = 15              # 포스트잇 색을 정할 때 보는 사진 수
+    color_fast_hits: int = 4                 # 같은 색 포스트잇이 이만큼(반대 색은 0장) 보이면 15장을 다 안 보고 바로 확정. 정지 신호 직후부터 미리 모은다. 0 이면 끔 (예전 방식)
     load_verify_seconds: float = 3.0         # 넣은 뒤 '공이 든 상자' 를 이 시간 동안 찾아본다
     load_verify_hits: int = 3                # 그동안 이만큼 넘게 보여야 성공
     load_retry_wait_seconds: float = 5.0     # 실패 후 다음 시도 전에 기다리는 시간 (떨어진 공을 사람이 제자리에 놓는 시간)

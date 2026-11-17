@@ -195,6 +195,21 @@ class Clock:
         self.t += max(dt, 0.01)
 
 
+class ScriptedEye:
+    """사진마다 포스트잇 색을 정해 둔 가짜 눈 (차 + 상자는 항상 보이고 가만히 서 있음). 목록이 끝나면 마지막 것을 계속"""
+
+    def __init__(self, notes):
+        self.notes, self.looks = list(notes), 0
+
+    def look(self):
+        note = self.notes[min(self.looks, len(self.notes) - 1)]
+        self.looks += 1
+        dets = [Det("car", 0.9, 230, 180, 180, 160), Det("box", 0.9, 280, 210, 80, 60)]
+        if note:
+            dets.append(Det(f"postit_{note}", 0.8, 310, 220, 20, 20))
+        return Seen(dets, WIDTH)
+
+
 class RunnerTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -243,6 +258,82 @@ class RunnerTest(unittest.TestCase):
         ok, why = self.runner.pick("red")
         self.assertFalse(ok)
         self.assertIn("공을 못 잡은", why)
+
+    def count_looks(self):
+        self.looks = 0
+        original = self.eye.look
+
+        def counted():
+            self.looks += 1
+            return original()
+        self.eye.look = counted
+
+    def test_color_votes_gathered_while_waiting_for_stop_are_used(self):
+        self.assertTrue(self.runner.wait_car_and_stop())
+        self.count_looks()
+        self.assertEqual(self.runner.read_color(), "red")
+        self.assertEqual(self.looks, 0)                       # 정차를 기다리는 동안 이미 모아서 사진을 더 안 본다
+
+    def test_unanimous_color_ends_reading_early(self):
+        self.count_looks()
+        self.assertEqual(self.runner.read_color(), "red")
+        self.assertEqual(self.looks, self.cfg.color_fast_hits)    # 15장이 아니라 4장
+
+    def test_fast_color_can_be_switched_off(self):
+        self.cfg.color_fast_hits = 0
+        self.assertTrue(self.runner.wait_car_and_stop())          # 끄면 미리 모으지도 않는다
+        self.assertIsNone(self.runner._votes)
+        self.count_looks()
+        self.assertEqual(self.runner.read_color(), "red")
+        self.assertEqual(self.looks, self.cfg.load_color_frames)  # 예전처럼 15장을 다 본다
+
+    def test_mixed_votes_fall_back_to_the_full_vote(self):
+        self.runner.eye = ScriptedEye(["red", "red", "blue", "red", "red", "red", "blue", "red", "red", "red",
+                                       "red", "red", "red", "red", "red"])
+        self.assertEqual(self.runner.read_color(), "red")
+        self.assertEqual(self.runner.eye.looks, self.cfg.load_color_frames)   # 반대 색이 섞이면 서두르지 않는다
+
+    def test_wrong_votes_from_a_moving_car_do_not_decide(self):
+        eye = ScriptedEye(["blue", "blue", "blue"] + ["red"] * 40)           # 움직이는 동안은 blue 로 잘못 봤다
+        self.runner.eye = eye
+        self.assertTrue(self.runner.wait_car_and_stop())
+        before = eye.looks
+        self.assertEqual(self.runner.read_color(), "red")                    # 선 뒤에 새로 본 15장 (모두 red) 이 결정
+        self.assertEqual(eye.looks - before, self.cfg.load_color_frames)
+
+    def test_no_postit_means_no_color(self):
+        self.runner.eye = ScriptedEye([None])
+        self.assertIsNone(self.runner.read_color())
+        self.assertEqual(self.runner.eye.looks, self.cfg.load_color_frames)
+
+    def test_used_votes_do_not_leak_to_the_next_car(self):
+        self.assertTrue(self.runner.wait_car_and_stop())
+        self.assertEqual(self.runner.read_color(), "red")
+        self.assertIsNone(self.runner._votes)                                # 한 번 쓰면 버린다
+        self.count_looks()
+        self.assertEqual(self.runner.read_color(), "red")
+        self.assertEqual(self.looks, self.cfg.color_fast_hits)               # 이전 차의 투표 없이 처음부터
+
+    def test_votes_restart_when_car_or_box_disappears_before_stop_signal(self):
+        eye = ScriptedEye(["blue"])
+        calls = {"n": 0}
+        original = eye.look
+
+        def flicker():
+            calls["n"] += 1
+            seen = original()
+            if calls["n"] == 2:                                              # 두 번째 사진에서 상자가 사라짐 = 다른 차일 수 있다
+                seen.dets[:] = [d for d in seen.dets if d.name != "box"]
+            return seen
+        eye.look = flicker
+        self.runner.eye = eye
+        self.assertTrue(self.runner.wait_car_and_stop())
+        self.assertGreaterEqual(self.runner._votes["counts"]["blue"], 1)
+        self.assertEqual(self.runner._votes["counts"]["red"], 0)
+        self.assertEqual(self.runner._votes["frames"], eye.looks - 2)         # 1·2 번째 사진의 투표는 버려짐
+
+    def test_fast_color_default_is_four(self):
+        self.assertEqual(MissionConfig().color_fast_hits, 4)
 
     def test_above_servo_moves_pan_until_basket_is_where_it_was_learned(self):
         corr, why = self.runner.step_above(self.learned)

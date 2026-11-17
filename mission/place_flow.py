@@ -4,6 +4,8 @@
   2 대기 자세로 가서 차를 기다림
   3 차와 상자가 함께 보이면 정지 신호 → 완전 정차 확인
   4 포스트잇 색 읽기 → 그 색 공 집기 (3번 동작 티칭의 빨간공_집기 / 파란공_집기)
+    (2026-11-17: 색 투표를 정지 신호 직후부터 3 과 같이 모아 둔다. 같은 색이 color_fast_hits 장 이상이고 반대 색이 0장이면
+     정차가 확인되는 순간 바로 집기 시작. 반대 색이 섞이면 예전처럼 15장을 새로 본다. 0 이면 예전 방식)
   5 바구니 위 (기본: 3 완전 정차 순간 상자 위치로 계산한 자세 = place_model.py 2차식.
                못 쓰면 학습 평균 자세로 간 뒤, 바구니가 학습 때와 같은 자리에 보이도록 조금씩 맞춤 = 실시간 맞추기)
   6 집게 해제 (늘 RELEASE_PCT = 60% 로 연다)
@@ -169,6 +171,8 @@ class PlaceRunner:
         self.stop_event = stop or threading.Event()
         self.max_wait: float | None = None           # 시험용: 차를 기다리는 최대 시간 (None = 계속)
         self.stop_box: dict | None = None            # 완전 정차 순간 YOLO 상자 (cx, cy, w, h) → 5 자세 계산에 쓴다
+        self._votes: dict | None = None              # 정차를 기다리는 동안 미리 모은 색 투표 (read_color 가 한 번 쓰고 버린다)
+        self._t_stop: float | None = None            # 정지 신호를 낸 시각 (색이 몇 초 만에 정해졌는지 기록용)
 
     def log(self, event, **kw):
         self._log(event, **kw)
@@ -196,6 +200,8 @@ class PlaceRunner:
         streak = 0
         stop_at = anchor = still_since = None
         self.stop_box = None
+        self._votes, self._t_stop = None, None
+        votes = self._new_votes() if int(cfg.color_fast_hits) > 0 else None
         while True:
             self.check()
             now = self.clock()
@@ -207,10 +213,16 @@ class PlaceRunner:
             seen = self.eye.look()
             car = pick_best(seen.dets, ("car",)) if seen else None
             box = pick_best(seen.dets, BASKET_NAMES) if seen else None
+            if votes is not None:
+                if stop_at is None and not (car is not None and box is not None):
+                    votes = self._new_votes()                # 차 + 상자가 끊기면 다른 차일 수 있다 → 투표를 처음부터
+                elif seen is not None:
+                    self._vote(votes, seen)
             if stop_at is None:
                 streak = streak + 1 if (car is not None and box is not None) else 0
                 if streak >= need:
                     stop_at = now
+                    self._t_stop = now
                     self.link.set("STOP_REQUEST", "", 0)
                     self.log("stop_request", frames=streak)
             else:
@@ -223,25 +235,61 @@ class PlaceRunner:
                     if box is not None:
                         self.stop_box = {"cx": round(box.cx, 1), "cy": round(box.cy, 1),
                                          "w": round(box.w, 1), "h": round(box.h, 1)}
-                    self.log("car_stopped", x=round(target.cx), y=round(target.cy), box=self.stop_box)
+                    self.log("car_stopped", x=round(target.cx), y=round(target.cy), box=self.stop_box,
+                             since_stop=round(now - stop_at, 2))
+                    self._votes = votes
                     return True
             # 차를 기다리는 동안은 짧게 쉬어 빨리 알아챈다. 정지 신호 뒤(정차 확인)는 원래 주기
             self.sleep(cfg.load_see_period if stop_at is None else cfg.track_period)
 
     # ── 4) 색 · 공 집기 ─────────────────────────────────────────────────
+    @staticmethod
+    def _new_votes() -> dict:
+        return {"counts": {"red": 0, "blue": 0}, "weight": {"red": 0.0, "blue": 0.0}, "frames": 0}
+
+    @staticmethod
+    def _vote(votes: dict, seen) -> None:
+        """사진 한 장의 포스트잇 색을 투표에 더한다 (포스트잇이 안 보여도 본 장수는 센다)"""
+        votes["frames"] += 1
+        note = pick_best(seen.dets, ("postit_red", "postit_blue")) if seen else None
+        if note is not None:
+            color = note.name.split("_")[1]
+            votes["counts"][color] += 1
+            votes["weight"][color] += note.conf
+
+    def _fast_color(self, *votes: dict) -> str | None:
+        """같은 색이 color_fast_hits 장 이상이고 반대 색은 한 장도 없으면 바로 그 색. 0 이면 끈다 (None)"""
+        need = int(self.cfg.color_fast_hits)
+        if need <= 0:
+            return None
+        red = sum(v["counts"]["red"] for v in votes)
+        blue = sum(v["counts"]["blue"] for v in votes)
+        if red >= need and blue == 0:
+            return "red"
+        if blue >= need and red == 0:
+            return "blue"
+        return None
+
     def read_color(self) -> str | None:
-        counts = {"red": 0, "blue": 0}
-        weight = {"red": 0.0, "blue": 0.0}
-        for _ in range(max(1, self.cfg.load_color_frames)):
+        """정차를 기다리는 동안 미리 모은 투표(pre)가 있으면 먼저 쓰고, 모자라면 사진을 더 본다.
+        - 빠른 확정: pre + 지금 본 사진을 합쳐 같은 색 N장 · 반대 색 0장이면 바로 끝낸다
+        - 그렇지 않으면 예전과 똑같이 '지금 본 사진 load_color_frames 장' 만으로 다수결 (pre 는 믿지 않는다:
+          차가 움직이는 중에 본 사진이 섞여 있을 수 있다)"""
+        pre = self._votes or self._new_votes()
+        self._votes = None                                       # 한 번 쓴 투표는 버린다 (다음 차에 섞이지 않게)
+        fresh = self._new_votes()
+        color = self._fast_color(pre)
+        frames_max = max(1, int(self.cfg.load_color_frames))
+        while color is None and fresh["frames"] < frames_max:
             self.check()
-            seen = self.eye.look()
-            note = pick_best(seen.dets, ("postit_red", "postit_blue")) if seen else None
-            if note is not None:
-                color = note.name.split("_")[1]
-                counts[color] += 1
-                weight[color] += note.conf
+            self._vote(fresh, self.eye.look())
             self.sleep(0.05)
-        self.log("color_vote", counts=counts)
+            color = self._fast_color(pre, fresh)
+        counts, weight = fresh["counts"], fresh["weight"]
+        self.log("color_vote", counts=counts, pre=pre["counts"], frames=fresh["frames"], fast=color is not None,
+                 since_stop=None if self._t_stop is None else round(self.clock() - self._t_stop, 2))
+        if color is not None:
+            return color
         if counts["red"] + counts["blue"] < COLOR_MIN_HITS:
             return None
         if counts["red"] != counts["blue"]:
