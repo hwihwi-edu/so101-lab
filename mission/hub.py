@@ -422,6 +422,20 @@ class Hub:
             return str(error)
         return None
 
+    def start_real(self) -> str:
+        """허브를 --real 로 켰을 때: 4번 화면을 준비하고 ★ 세트로 실전 반복을 바로 시작한다 (진짜 ROS2 통신).
+        시작했으면 안내 문장, 못 했으면 ValueError (허브는 그대로 켜 둔다 → 화면에서 고친 뒤 [▶ 실전 반복])"""
+        from .place_learn import PlaceError
+        problem = self.open_place()
+        if problem:
+            raise ValueError(problem)
+        link = self.place_link(False)
+        try:
+            sid = self.place.book.chosen_set()
+            return self.place.start("real", sid, link)
+        except PlaceError as error:
+            raise ValueError(str(error)) from None
+
     def place_link(self, no_ros: bool):
         """차와의 통신. no_ros = 신호를 화면에만 (연습). 진짜는 Docker 안의 ROS2 (한 번 열면 허브가 꺼질 때까지 쓴다)"""
         from .load_link import FakeLoadLink, RosLoadLink
@@ -1346,7 +1360,7 @@ def make_router(hub: Hub):
                     if hub.place is None:
                         raise ValueError("바구니 넣기 학습 화면을 다시 열어 주세요.")
                     action = path[len("/api/place/"):]
-                    if action in ("learn", "test"):
+                    if action in ("learn", "test", "real"):
                         reason = hub.arm_in_use(ignore="place")
                         if reason:
                             raise ValueError(reason)
@@ -1416,7 +1430,11 @@ def main(argv=None) -> int:
                         help="포트 전달 없이 같은 와이파이의 노트북에서 http://<Pi 의 IP>:8081 로 열기 (누구나 열 수 있으니 준비할 때만)")
     parser.add_argument("--fake-arm", action="store_true", help="화면 연습용 가짜 팔 (16번 동작 티칭 화면을 팔 없이 눌러 볼 때)")
     parser.add_argument("--start", choices=sorted(MODE_NAMES | PAGE_NAMES), help="바로 열 화면 (안내 문구에 주소를 붙인다)")
+    parser.add_argument("--real", action="store_true",
+                        help="경연용: 켜자마자 4번 화면의 실전 반복(★ 세트, 진짜 ROS2)을 시작. 화면은 /p/place 로 본다")
     args = parser.parse_args(argv)
+    if args.real:
+        args.start = "place"
     hub = Hub("fake" if args.fake_arm else args.port)
     hub.allow_fake = args.fake_arm
     hub.allow_lan = args.lan
@@ -1439,6 +1457,12 @@ def main(argv=None) -> int:
         webbrowser.open(url)
     print(f"Pi에 접속 중이면 VS Code의 Ports에서 {server.server_port} 포트를 전달한 뒤 브라우저로 여세요.", flush=True)
     print("이미 열려 있는 탭은 새로고침하세요. 끝내려면 허브의 ‘허브 끝내기’ 또는 이 터미널에서 Ctrl+C.", flush=True)
+    if args.real:
+        try:
+            print("★ " + hub.start_real(), flush=True)
+        except ValueError as error:                    # 허브는 켜 둔다: 화면에서 고친 뒤 [▶ 실전 반복]
+            print(f"✘ 실전 반복을 시작하지 못했어요: {error}", flush=True)
+            print("  허브 화면에서 문제를 고친 뒤 4번 화면의 [▶ 실전 반복] 을 누르세요.", flush=True)
     try:
         while not hub.quit:
             server.handle_request()

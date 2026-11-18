@@ -334,6 +334,31 @@ class PlaceRunner:
                  msg="공 넣기에 실패해서 이번 정차 화면을 저장했어요")
         return files
 
+    # ── 실전 반복: 다음 차를 받기 전에 지금 차가 떠나기를 기다린다 ──────
+    def wait_car_gone(self) -> bool:
+        """결과(출발 신호)를 알린 뒤: 차가 서 있다가 '주행 중'(DRIVING)을 알리거나, 차 · 바구니가 t_left 초 동안
+        안 보이면 떠난 것 (True). load_leave_timeout 초 안에 확인하지 못하면 False (그래도 다음 차를 기다린다).
+        기다리는 동안에도 정지 버튼을 본다. mission.loading 의 wait_car_gone 과 같은 기준"""
+        cfg = self.cfg
+        was = getattr(self.link, "car_state", None)  # 결과를 알릴 때 차 상태. 서 있던 차가 DRIVING 이 되면 떠난 것
+        t0 = self.clock()
+        gone_since = None
+        while self.clock() - t0 < cfg.load_leave_timeout:
+            self.check()
+            now = getattr(self.link, "car_state", None)
+            if now == "DRIVING" and was not in (None, "DRIVING"):
+                return True
+            seen = self.eye.look()
+            if seen and pick_best(seen.dets, BASKET_NAMES + ("car",)) is not None:
+                gone_since = None
+            else:
+                gone_since = gone_since if gone_since is not None else self.clock()
+                if self.clock() - gone_since >= cfg.t_left:
+                    return True
+            self.sleep(0.2)
+        self.log("warn", msg="차가 떠나는 것을 확인하지 못했지만 다음 차를 기다립니다")
+        return False
+
     # ── 4) 색 · 공 집기 ─────────────────────────────────────────────────
     @staticmethod
     def _new_votes() -> dict:
